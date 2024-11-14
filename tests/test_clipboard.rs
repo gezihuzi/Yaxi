@@ -7,14 +7,17 @@ use yaxi::clipboard::Clipboard;
 mod tests {
     use super::*;
 
+    #[test]
     fn test_clipboard_read_text() {
         let clipboard = Clipboard::new(None).unwrap();
 
         let result = clipboard.get_text();
+        println!("{:?}", result);
 
         assert!(result.is_ok());
     }
 
+    #[test]
     fn test_clipboard_write_text() {
         let clipboard = Clipboard::new(None).unwrap();
 
@@ -28,6 +31,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
     fn test_clipboard_text_consistency() {
         let clipboard = Clipboard::new(None).unwrap();
 
@@ -46,11 +50,14 @@ mod tests {
     }
 
     #[test]
-    fn run() {
-        test_clipboard_read_text();
+    fn test_clipboard_clear() {
+        let clipboard = Clipboard::new(None).unwrap();
 
-        test_clipboard_write_text();
+        let result = clipboard.clear();
+        assert!(result.is_ok());
 
-        test_clipboard_text_consistency();
+        let result = clipboard.get_targets();
+        assert!(result.is_ok());
+        assert_eq!(0, result.unwrap().len());
     }
 }
