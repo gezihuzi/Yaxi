@@ -175,6 +175,10 @@ impl Atom {
     pub fn is_null(&self) -> bool {
         self.id == 0
     }
+
+    pub fn to_ne_bytes(&self) -> [u8; 4] {
+        self.id.to_ne_bytes()
+    }
 }
 
 impl TryFrom<&[u8]> for Atom {
