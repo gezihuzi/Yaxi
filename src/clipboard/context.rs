@@ -1,123 +1,50 @@
-use std::hash::Hash;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use crate::display::{error::Error, Atom, Display};
-use crate::proto::WindowClass;
-use crate::window::{ValuesBuilder, Window, WindowArguments};
+use crate::proto::{Event, WindowClass};
+use crate::window::{PropFormat, PropMode, ValuesBuilder, Window, WindowArguments};
 
 use super::atoms::Atoms;
 
-macro_rules! try_write {
-    ($mutex:expr) => {
-        $mutex.write().map_err(|_| Error::FailedToLock)
-    };
+#[derive(Default)]
+pub(super) struct Selection {
+    data: RwLock<Option<Vec<ClipboardData>>>,
+    mutex: Mutex<()>,
+    has_changed: Condvar,
 }
 
-macro_rules! try_read {
-    ($mutex:expr) => {
-        $mutex.read().map_err(|_| Error::FailedToLock)
-    };
-}
-
-#[derive(Debug, Clone)]
-pub struct Target {
-    pub atom: Atom,
-    pub name: Option<String>,
-}
-
-impl From<Atom> for Target {
-    fn from(atom: Atom) -> Target {
-        Target { atom, name: None }
-    }
-}
-
-impl Target {
-    pub fn new(atom: Atom, name: Option<String>) -> Target {
-        Target { atom, name }
+impl Selection {
+    pub(super) fn write(&self, data: Option<Vec<ClipboardData>>) -> Result<(), Error> {
+        let _guard = self.mutex.lock().map_err(|_| Error::FailedToLock)?;
+        let mut guard = self.data.write().map_err(|_| Error::FailedToLock)?;
+        *guard = data;
+        self.has_changed.notify_all();
+        Ok(())
     }
 
-    pub fn atom(&self) -> Atom {
-        self.atom
-    }
-
-    pub fn name(&self) -> Option<&str> {
-        self.name.as_deref()
+    pub(super) fn read(&self) -> Result<Option<Vec<ClipboardData>>, Error> {
+        let _guard = self.mutex.lock().map_err(|_| Error::FailedToLock)?;
+        let guard = self.data.read().map_err(|_| Error::FailedToLock)?;
+        Ok(guard.clone())
     }
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ClipData {
-    pub(super) bytes: Vec<u8>,
-    pub(super) target: Atom,
+pub(super) struct ClipboardData {
+    pub(super) bytes: Arc<Vec<u8>>,
+    pub(super) format: Atom,
 }
 
-impl Hash for ClipData {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.target.hash(state);
-    }
-}
-
-impl PartialEq for ClipData {
-    fn eq(&self, other: &Self) -> bool {
-        self.target == other.target
-    }
-}
-
-impl Eq for ClipData {}
-
-#[derive(Clone, Default)]
-pub(super) struct SelectionData {
-    pub(super) data: Vec<ClipData>,
-}
-
-impl SelectionData {
-    #[inline]
-    pub fn poll(&self) -> bool {
-        !self.data.is_empty()
-    }
-
-    #[inline]
-    pub fn reset(&mut self) {
-        self.data.clear()
-    }
-
-    #[inline]
-    pub fn get(&self, target: Atom) -> Option<ClipData> {
-        self.data.iter().find(|d| d.target == target).cloned()
-    }
-
-    #[inline]
-    pub fn get_latest(&self) -> Option<ClipData> {
-        self.data.last().cloned()
-    }
-
-    #[inline]
-    pub fn targets(&self) -> Vec<Atom> {
-        self.data.iter().map(|d| d.target).collect()
-    }
-
-    #[inline]
-    pub fn set(&mut self, bytes: &[u8], target: Atom) {
-        let clip_data = ClipData {
-            bytes: bytes.to_vec(),
-            target,
-        };
-        if let Some(pos) = self.data.iter().position(|d| d.target == target) {
-            self.data.remove(pos);
-        }
-        self.data.push(clip_data);
-    }
-
-    pub fn remove(&mut self, target: Atom) -> Option<ClipData> {
-        if let Some(pos) = self.data.iter().position(|d| d.target == target) {
-            Some(self.data.remove(pos))
-        } else {
-            None
+impl ClipboardData {
+    pub(super) fn new(bytes: Vec<u8>, format: Atom) -> ClipboardData {
+        ClipboardData {
+            bytes: Arc::new(bytes),
+            format,
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &ClipData> {
-        self.data.iter()
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
@@ -157,14 +84,14 @@ pub(super) struct Context {
     pub(super) display: Display,
     pub(super) state: State,
     pub(super) atoms: super::atoms::Atoms,
-    pub(super) data: Arc<RwLock<SelectionData>>,
+    pub(super) data: Arc<Selection>,
 }
 
 impl Context {
     pub(super) fn new(display: Display) -> Result<Self, Error> {
         let state = State::from_display(&display)?;
         let atoms = Atoms::new(&display)?;
-        let data = Arc::new(RwLock::new(SelectionData::default()));
+        let data = Arc::new(Selection::default());
         Ok(Context {
             display,
             state,
@@ -180,99 +107,224 @@ impl Context {
         Ok(())
     }
 
-    pub(super) fn get_string(&self, target: Atom) -> Result<Option<String>, Error> {
-        self.get_target_data(target)
-            .map(|d| d.map(|d| String::from_utf8_lossy(&d.bytes).to_string()))
+    pub fn write(&self, data: Vec<ClipboardData>, selection: Atom) -> Result<(), Error> {
+        self.set_selection_owner(selection)?;
+
+        self.data.write(Some(data))?;
+
+        Ok(())
     }
 
-    pub(super) fn set_string(&self, string: &str, target: Atom) -> Result<(), Error> {
-        let bytes = string.as_bytes();
-        self.write_data(bytes, target)
-    }
-
-    pub(super) fn get_targets(&self, selection: Atom) -> Result<Vec<Target>, Error> {
-        let targets = self
-            .wait_for_data(selection, self.atoms.protocol.targets)?
-            .map(|d| d.bytes)
-            .unwrap_or_default();
-
-        let mut atoms = vec![];
-
-        for i in 0..targets.len() / 4 {
-            let bytes = &targets[i * 4..(i + 1) * 4];
-            if let Ok(atom) = Atom::try_from(bytes) {
-                atoms.push(atom);
-            }
-        }
-
-        let targets = atoms.into_iter().map(Target::from).collect();
-        Ok(targets)
-    }
-
-    pub(super) fn read_saved_targets(&self) -> Result<Vec<Atom>, Error> {
-        try_read!(self.data).map(|d| d.targets())
-    }
-
-    pub(super) fn get_target_sizes(&self) -> Result<Option<Vec<(Atom, i32)>>, Error> {
-        if let Some(data) = self.get_target_data(self.atoms.protocol.target_sizes)? {
-            let mut sizes = Vec::new();
-            for chunk in data.bytes.chunks(8) {
-                if chunk.len() == 8 {
-                    if let (Ok(atom), Ok(size_bytes)) = (
-                        Atom::try_from(&chunk[0..4]),
-                        <[u8; 4]>::try_from(&chunk[4..8]),
-                    ) {
-                        let size = i32::from_ne_bytes(size_bytes);
-                        sizes.push((atom, size));
+    pub fn read(&self, formats: &[Atom], selection: Atom) -> Result<Option<ClipboardData>, Error> {
+        // If we own the selection, return our data
+        if self.is_owner(selection)? {
+            let data = self.data.read()?;
+            if let Some(data_list) = data {
+                for data in data_list {
+                    for format in formats {
+                        if format == &data.format {
+                            return Ok(Some(data.clone()));
+                        }
                     }
                 }
             }
-            Ok(Some(sizes))
-        } else {
-            Ok(None)
+            return Ok(None);
         }
+
+        // Request data from current owner
+        for format in formats {
+            match self.request_conversion(selection, *format)? {
+                Some(bytes) => {
+                    return Ok(Some(ClipboardData::new(bytes, *format)));
+                }
+                None => continue,
+            }
+        }
+
+        Ok(None)
     }
 
-    pub(super) fn wait_for_data(
-        &self,
-        selection: Atom,
-        target: Atom,
-    ) -> Result<Option<ClipData>, Error> {
-        try_write!(self.data)?.reset();
+    fn check_selection_notify(&self) -> Result<Option<Vec<u8>>, Error> {
+        let mut display = self.display.clone();
+        let event = display.next_event()?;
+
+        if let Event::SelectionNotify {
+            property, target, ..
+        } = event
+        {
+            if property == self.state.property {
+                if let Some((bytes, _)) = self.state.window.get_property(property, target, true)? {
+                    self.state.window.delete_property(property)?;
+                    return Ok(Some(bytes));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn request_conversion(&self, selection: Atom, target: Atom) -> Result<Option<Vec<u8>>, Error> {
+        self.state.window.delete_property(self.state.property)?;
 
         self.state
             .window
             .convert_selection(selection, target, self.state.property)?;
 
-        while !try_read!(self.data)?.poll() {}
+        // Wait for SelectionNotify with timeout
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_millis(1000);
 
-        try_read!(self.data).map(|data| data.get(target))
-    }
-
-    pub(super) fn get_target_data(&self, target: Atom) -> Result<Option<ClipData>, Error> {
-        let owner = self
-            .display
-            .get_selection_owner(self.atoms.selections.clipboard)?;
-
-        let window = self.display.window_from_id(owner)?;
-        if window.id() != self.state.window.id() {
-            self.wait_for_data(self.atoms.selections.clipboard, target)
-        } else {
-            try_read!(self.data).map(|d| d.get(target))
+        while start.elapsed() < timeout {
+            if let Some(data) = self.check_selection_notify()? {
+                return Ok(Some(data));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
+
+        Ok(None)
     }
 
-    pub(super) fn write_data(&self, bytes: &[u8], target: Atom) -> Result<(), Error> {
-        try_write!(self.data)?.set(bytes, target);
+    fn is_owner(&self, selection: Atom) -> Result<bool, Error> {
+        let owner = self.display.get_selection_owner(selection)?;
+        Ok(owner == self.state.window.id())
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum ClipboardEvent {
+    SelectionClear(Atom),
+    SelectionRequest {
+        time: u32,
+        owner: u32,
+        selection: Atom,
+        target: Atom,
+        property: Atom,
+    },
+    SelectionNotify {
+        property: Atom,
+        target: Atom,
+        data: Option<Vec<u8>>,
+    },
+    Timeout,
+    Error(Error),
+}
+
+impl Context {
+    pub(super) fn handle_event(&self, event: ClipboardEvent) -> Result<(), Error> {
+        match event {
+            ClipboardEvent::SelectionClear(selection) => {
+                if selection == self.atoms.selections.clipboard {
+                    self.data.write(None)?;
+                }
+            }
+
+            ClipboardEvent::SelectionRequest {
+                time,
+                owner,
+                selection,
+                target,
+                property,
+            } => {
+                let requestor = self.display.window_from_id(owner)?;
+
+                // 处理 TARGETS 请求
+                if target == self.atoms.protocol.targets {
+                    if let Some(data) = self.data.read()? {
+                        let targets: Vec<_> = data
+                            .iter()
+                            .map(|d| d.format)
+                            .flat_map(|f| f.to_ne_bytes())
+                            .collect();
+
+                        requestor.change_property(
+                            property,
+                            self.atoms.protocol.atom,
+                            PropFormat::Format32,
+                            PropMode::Replace,
+                            &targets,
+                        )?;
+
+                        self.send_selection_notify(time, owner, selection, target, property)?;
+                    } else {
+                        self.send_selection_notify(
+                            time,
+                            owner,
+                            selection,
+                            target,
+                            Atom::default(),
+                        )?;
+                    }
+                }
+                // 处理常规数据请求
+                else if let Some(data_list) = self.data.read()? {
+                    if let Some(data) = data_list.iter().find(|d| d.format == target) {
+                        requestor.change_property(
+                            property,
+                            target,
+                            PropFormat::Format8,
+                            PropMode::Replace,
+                            &data.bytes,
+                        )?;
+
+                        self.send_selection_notify(time, owner, selection, target, property)?;
+                    } else {
+                        self.send_selection_notify(
+                            time,
+                            owner,
+                            selection,
+                            target,
+                            Atom::default(),
+                        )?;
+                    }
+                } else {
+                    self.send_selection_notify(time, owner, selection, target, Atom::default())?;
+                }
+            }
+
+            ClipboardEvent::SelectionNotify {
+                property,
+                target,
+                data,
+            } => {
+                if !property.is_null() {
+                    if let Some(bytes) = data {
+                        self.data
+                            .write(Some(vec![ClipboardData::new(bytes, target)]))?;
+                    }
+                }
+            }
+
+            ClipboardEvent::Timeout => {
+                // 处理超时情况
+                // log::warn!("Event handling timeout");
+            }
+
+            ClipboardEvent::Error(e) => {
+                // log::error!("Event handling error: {:?}", e);
+                return Err(e);
+            }
+        }
+
         Ok(())
     }
 
-    pub(super) fn read_data(&self, target: Atom) -> Result<Option<Vec<u8>>, Error> {
-        try_read!(self.data).map(|d| d.get(target).map(|d| d.bytes.clone()))
-    }
-
-    pub(super) fn clear_data(&self) -> Result<(), Error> {
-        try_write!(self.data)?.reset();
+    fn send_selection_notify(
+        &self,
+        time: u32,
+        requestor: u32,
+        selection: Atom,
+        target: Atom,
+        property: Atom,
+    ) -> Result<(), Error> {
+        let requestor_window = self.display.window_from_id(requestor)?;
+        let event = Event::SelectionNotify {
+            time,
+            requestor,
+            selection,
+            target,
+            property,
+        };
+        requestor_window.send_event(event, vec![], false)?;
         Ok(())
     }
 }
