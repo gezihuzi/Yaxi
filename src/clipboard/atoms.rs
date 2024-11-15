@@ -16,11 +16,17 @@ pub(super) struct SelectionAtoms {
 
 #[derive(Clone)]
 pub(super) struct ProtocolAtoms {
-    pub(super) manager: Atom,
-    pub(super) save_targets: Atom,
-    pub(super) targets: Atom,
-    pub(super) atom: Atom,
-    pub(super) incremental: Atom,
+    pub manager: Atom,          // "CLIPBOARD_MANAGER"
+    pub targets: Atom,          // "TARGETS"
+    pub multiple: Atom,         // "MULTIPLE"
+    pub timestamp: Atom,        // "TIMESTAMP"
+    pub target_sizes: Atom,     // "TARGET_SIZES"
+    pub save_targets: Atom,     // "SAVE_TARGETS"
+    pub delete: Atom,           // "DELETE"
+    pub insert_property: Atom,  // "INSERT_PROPERTY"
+    pub insert_selection: Atom, // "INSERT_SELECTION"
+    pub incr: Atom,             // "INCR"
+    pub atom: Atom,             // "ATOM"
 }
 
 #[derive(Clone)]
@@ -64,10 +70,16 @@ impl ProtocolAtoms {
     fn new(display: &Display) -> Result<Self, Error> {
         Ok(Self {
             manager: display.intern_atom("CLIPBOARD_MANAGER", false)?,
-            save_targets: display.intern_atom("SAVE_TARGETS", false)?,
             targets: display.intern_atom("TARGETS", false)?,
+            multiple: display.intern_atom("MULTIPLE", false)?,
+            timestamp: display.intern_atom("TIMESTAMP", false)?,
+            target_sizes: display.intern_atom("TARGET_SIZES", false)?,
+            save_targets: display.intern_atom("SAVE_TARGETS", false)?,
+            delete: display.intern_atom("DELETE", false)?,
+            insert_property: display.intern_atom("INSERT_PROPERTY", false)?,
+            insert_selection: display.intern_atom("INSERT_SELECTION", false)?,
+            incr: display.intern_atom("INCR", false)?,
             atom: display.intern_atom("ATOM", false)?,
-            incremental: display.intern_atom("INCR", false)?,
         })
     }
 }

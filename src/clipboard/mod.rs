@@ -1,16 +1,17 @@
-use context::{Context, Target};
-
-use crate::display::error::Error;
-use crate::display::{self, *};
-use crate::proto::*;
-use crate::window::*;
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use crate::display::{self, *};
+use crate::proto::*;
+use crate::window::*;
+
+use context::{Context, Target};
+use error::Error;
+
 mod atoms;
 mod context;
+pub mod error;
 
 pub struct Clipboard {
     context: context::Context,
@@ -45,33 +46,41 @@ impl Clipboard {
 
 impl Clipboard {
     pub fn clear(&self) -> Result<(), Error> {
-        self.context.set_selection_as_clipboard()?;
+        self.context
+            .set_selection_owner(self.context.atoms.selections.clipboard)?;
         self.context
             .state
             .window
-            .delete_property(self.context.state.property)
+            .delete_property(self.context.state.property)?;
+        Ok(())
     }
 
     /// set text into the clipboard
     pub fn set_text(&self, text: &str) -> Result<(), Error> {
-        self.context.set_selection_as_clipboard()?;
         self.context
-            .set_string(text, self.context.atoms.formats.utf8_string)
+            .set_selection_owner(self.context.atoms.selections.clipboard)?;
+        self.context
+            .set_string(text, self.context.atoms.formats.utf8_string)?;
+        Ok(())
     }
 
-    // TODO: this deadlocks if the owner terminates during the call
+    /// TODO: this deadlocks if the owner terminates during the call
     /// get text from the clipboard
     pub fn get_text(&self) -> Result<Option<String>, Error> {
-        self.context
-            .get_string(self.context.atoms.formats.utf8_string)
+        let text = self
+            .context
+            .get_string(self.context.atoms.formats.utf8_string)?;
+        Ok(text)
     }
 
     pub fn get_html(&self) -> Result<Option<String>, Error> {
-        self.context.get_string(self.context.atoms.formats.html)
+        let html = self.context.get_string(self.context.atoms.formats.html)?;
+        Ok(html)
     }
 
     pub fn get_rtf(&self) -> Result<Option<String>, Error> {
-        self.context.get_string(self.context.atoms.formats.rtf)
+        let rtf = self.context.get_string(self.context.atoms.formats.rtf)?;
+        Ok(rtf)
     }
 
     pub fn get_uri_list(&self) -> Result<Option<Vec<String>>, Error> {
@@ -83,15 +92,19 @@ impl Clipboard {
     }
 
     pub fn get_plain_text(&self) -> Result<Option<String>, Error> {
-        self.context
+        let text = self
+            .context
             .get_string(self.context.atoms.formats.utf8_string)
             .or_else(|_| self.context.get_string(self.context.atoms.formats.plain))
-            .or_else(|_| self.context.get_string(self.context.atoms.formats.string))
+            .or_else(|_| self.context.get_string(self.context.atoms.formats.string))?;
+        Ok(text)
     }
 
     pub fn get_targets(&self) -> Result<Vec<Target>, Error> {
-        self.context
-            .get_targets(self.context.atoms.selections.clipboard)
+        let targets = self
+            .context
+            .get_targets(self.context.atoms.selections.clipboard)?;
+        Ok(targets)
     }
 }
 
@@ -107,10 +120,6 @@ impl Listener {
         Listener { context, kill }
     }
 
-    fn get_saved_data(&self, target: Atom) -> Result<Option<Vec<u8>>, Error> {
-        self.context.get_saved_data(target)
-    }
-
     fn handle_manager_request(
         &self,
         requestor: &Window,
@@ -119,13 +128,13 @@ impl Listener {
     ) -> Result<(), Error> {
         if target == self.context.atoms.protocol.save_targets {
             self.handle_save_targets(requestor, property)?;
-        } else if let Some(data) = self.get_saved_data(target)? {
+        } else if let Some(data) = self.context.get_target_data(target)? {
             requestor.change_property(
                 property,
                 target,
                 PropFormat::Format8,
                 PropMode::Replace,
-                &data,
+                &data.bytes,
             )?;
         }
         Ok(())
@@ -152,16 +161,18 @@ impl Listener {
         target: Atom,
         property: Atom,
     ) -> Result<(), Error> {
-        let data = self.context.read_clipboard_data()?;
-        if target.id() == data.target.id() && !property.is_null() {
-            requestor.change_property(
-                property,
-                target,
-                PropFormat::Format8,
-                PropMode::Replace,
-                &data.bytes,
-            )?;
+        if let Some(data) = self.context.get_target_data(target)? {
+            if target.id() == data.target.id() && !property.is_null() {
+                requestor.change_property(
+                    property,
+                    target,
+                    PropFormat::Format8,
+                    PropMode::Replace,
+                    &data.bytes,
+                )?;
+            }
         }
+
         Ok(())
     }
 
@@ -211,7 +222,10 @@ impl Listener {
                 match display.next_event()? {
                     Event::SelectionClear { selection, .. } => {
                         if selection == self.context.atoms.selections.clipboard {
-                            self.context.save_clipboard(selection)?;
+                            // do nothing
+                        } else if selection == self.context.atoms.protocol.manager {
+                            // The situation where the handling manager selection rights have been removed
+                            // Additional cleanup logic can be added here
                         }
                     }
                     Event::SelectionRequest {
@@ -235,10 +249,8 @@ impl Listener {
                             } else {
                                 bytes
                             };
-                            self.context.write_clipboard_data(
-                                &bytes,
-                                self.context.atoms.formats.utf8_string,
-                            )?;
+                            self.context
+                                .write_data(&bytes, self.context.atoms.formats.utf8_string)?;
                         }
                     }
                     _ => {}
