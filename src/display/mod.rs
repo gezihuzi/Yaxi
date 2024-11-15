@@ -364,7 +364,6 @@ impl Display {
             self.sequence.clone(),
             self.roots.clone(),
             id,
-
             #[cfg(feature = "ewmh")]
             self.ewmh_atoms.clone(),
         )
@@ -381,7 +380,6 @@ impl Display {
             self.roots.visual_from_id(screen.response.root_visual)?,
             screen.response.root_depth,
             screen.response.root,
-
             #[cfg(feature = "ewmh")]
             self.ewmh_atoms.clone(),
         ))
@@ -760,8 +758,7 @@ impl EventListener {
                     value: self.stream.recv(value_size)?,
                 })?;
 
-                self.stream
-                    .recv(request::pad(value_size))?;
+                self.stream.recv(request::pad(value_size))?;
             }
             ReplyKind::GetKeyboardMapping => {
                 let response: KeyboardMappingResponse = self.stream.recv_decode()?;
