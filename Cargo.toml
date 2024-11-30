@@ -31,7 +31,6 @@ log = "0.4"
 
 [dev-dependencies]
 yaxi = { path = ".", features = ["clipboard", "xinerama", "extras", "ewmh"] }
-serial_test = "3.2"
 
 [workspace]
 members = ["examples/*"]
