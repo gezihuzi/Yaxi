@@ -54,7 +54,6 @@ impl Cache {
             .iter()
             .map(|(_, entry)| entry.data.clone())
             .collect::<Vec<_>>();
-        data.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
         Ok(Some(data))
     }
 
@@ -196,15 +195,13 @@ impl Cache {
 pub(super) struct ClipboardData {
     pub(super) bytes: Arc<Vec<u8>>,
     pub(super) format: Atom,
-    pub(super) timestamp: u32,
 }
 
 impl ClipboardData {
-    pub(super) fn new(bytes: Vec<u8>, format: Atom, timestamp: u32) -> ClipboardData {
+    pub(super) fn new(bytes: Vec<u8>, format: Atom) -> ClipboardData {
         ClipboardData {
             bytes: Arc::new(bytes),
             format,
-            timestamp,
         }
     }
 
@@ -212,7 +209,6 @@ impl ClipboardData {
         ClipboardData {
             bytes: Arc::new(bytes),
             format,
-            timestamp: 0,
         }
     }
 
@@ -314,6 +310,6 @@ impl HandoverStatus {
 
 #[derive(Debug, Default)]
 pub(super) struct Handover {
-    pub(super) state: Mutex<HandoverStatus>,
+    pub(super) status: Mutex<HandoverStatus>,
     pub(super) condvar: Condvar,
 }
