@@ -2,6 +2,7 @@ use crate::display;
 
 #[derive(Debug)]
 pub enum Error {
+    UnsupportedFormat,
     ServiceStopped,
     HandoverError,
     Terminated,
@@ -26,6 +27,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Error::UnsupportedFormat => write!(f, "UnsupportedFormat"),
             Error::ServiceStopped => write!(f, "ServiceStopped"),
             Error::HandoverError => write!(f, "HandoverError"),
             Error::Terminated => write!(f, "Terminated"),
